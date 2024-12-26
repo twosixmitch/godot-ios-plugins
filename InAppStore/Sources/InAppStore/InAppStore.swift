@@ -54,7 +54,7 @@ class InAppStore: Node {
         products = []
         super.init()
     }
-
+    
     required init(nativeHandle: UnsafeRawPointer) {
         products = []
         super.init(nativeHandle: nativeHandle)
@@ -73,15 +73,15 @@ class InAppStore: Node {
         self.productIDs = productIDs
         
         GD.print("InAppStore: initialize (\(productIDs))")
-
+        
         updateListenerTask = self.listenForTransactions()
-
+        
         Task {
             await updateProducts()
             await updateProductStatus()
         }
     }
-
+    
     /// Purchase a product
     ///
     /// - Parameters:
@@ -100,7 +100,7 @@ class InAppStore: Node {
                         // Success
                         let transaction: Transaction = try checkVerified(verification)
                         await transaction.finish()
-
+                        
                         onComplete.callDeferred(Variant(OK), Variant(InAppPurchaseStatus.purchaseOK.rawValue))
                         break
                     case .pending:
@@ -122,7 +122,7 @@ class InAppStore: Node {
             }
         }
     }
-
+    
     /// Check if a product is purchased
     ///
     /// - Parameters:
@@ -134,7 +134,7 @@ class InAppStore: Node {
         print("InAppStore: isPurchased(\(productID))")
         return purchasedProducts.contains(productID)
     }
-
+    
     /// Get products
     ///
     /// - Parameters:
@@ -149,7 +149,7 @@ class InAppStore: Node {
             do {
                 let storeProducts: [Product] = try await Product.products(for: identifiers)
                 var products: GArray = GArray()
-
+                
                 for storeProduct: Product in storeProducts {
                     var product: InAppStoreProduct = InAppStoreProduct()
                     product.displayName = storeProduct.displayName
@@ -169,7 +169,7 @@ class InAppStore: Node {
                     default:
                         product.type = InAppStoreProduct.TYPE_UNKNOWN
                     }
-
+                    
                     onComplete.callDeferred(Variant(OK), Variant(products))
                 }
             } catch {
@@ -179,7 +179,7 @@ class InAppStore: Node {
             }
         }
     }
-
+    
     /// Restore purchases
     ///
     /// - Parameter onComplete: Callback with parameter: (error: Variant) -> (error: Int)
@@ -195,7 +195,7 @@ class InAppStore: Node {
             }
         }
     }
-
+    
     /// Get the current app environment
     ///
     /// NOTE: On iOS 16 this might display a system prompt that asks users to authenticate
@@ -225,7 +225,7 @@ class InAppStore: Node {
                 onComplete.callDeferred(Variant(AppTransactionError.error.rawValue), Variant("unknown"))
                 return
             }
-
+            
             if path.contains("CoreSimulator") {
                 onComplete.callDeferred(Variant(AppTransactionError.ok.rawValue), Variant("xcode"))
             } else if path.contains("sandboxReceipt") {
@@ -235,7 +235,7 @@ class InAppStore: Node {
             }
         }
     }
-
+    
     /// Refresh the App Store signed app transaction (only iOS 16+)
     ///
     /// NOTE: This will display a system prompt that asks users to authenticate
@@ -254,9 +254,9 @@ class InAppStore: Node {
             onComplete.callDeferred(Variant(OK))
         }
     }
-
+    
     // Internal functionality
-
+    
     func getProduct(_ productIdentifier: String) async throws -> Product? {
         var product: [Product] = []
         do {
@@ -264,10 +264,10 @@ class InAppStore: Node {
         } catch {
             GD.pushError("Unable to get product with identifier: \(productIdentifier): \(error)")
         }
-
+        
         return product.first
     }
-
+    
     func updateProducts() async {
         print("InAppStore: update products")
         
@@ -279,7 +279,7 @@ class InAppStore: Node {
             GD.pushError("Failed to get products from App Store: \(error)")
         }
     }
-
+    
     func updateProductStatus() async {
         print("InAppStore: update product status")
         
@@ -287,7 +287,7 @@ class InAppStore: Node {
             guard case .verified(let transaction) = result else {
                 continue
             }
-
+            
             if transaction.revocationDate == nil {
                 self.purchasedProducts.insert(transaction.productID)
                 emit(signal: InAppStore.productPurchased, transaction.productID)
@@ -297,7 +297,7 @@ class InAppStore: Node {
             }
         }
     }
-
+    
     func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
         switch result {
         case .unverified:
@@ -306,7 +306,7 @@ class InAppStore: Node {
             return safe
         }
     }
-
+    
     func listenForTransactions() -> Task<Void, Error> {
         print("InAppStore: listen for transactions")
         return Task.detached {
