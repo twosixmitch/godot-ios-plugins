@@ -18,19 +18,21 @@ let OK: Int = 0
 
 
 @Godot
-class InAppStore: RefCounted {
+class InAppStore: Node {
     enum InAppPurchaseStatus: Int {
         case purchaseOK = 0
         case purchaseSuccessfulButUnverified = 2
         case purchasePendingAuthorization = 3
         case purchaseCancelledByUser = 4
     }
+    
     enum InAppPurchaseError: Int, Error {
         case failedToGetProducts = 1
         case purchaseFailed = 2
         case noSuchProduct = 3
         case failedToRestorePurchases = 4
     }
+    
     enum AppTransactionError: Int, Error {
         case ok = 0
         case unverified = 1
@@ -69,6 +71,8 @@ class InAppStore: RefCounted {
     @Callable
     func initialize(productIDs: [String]) {
         self.productIDs = productIDs
+        
+        GD.print("InAppStore: initialize (\(productIDs))")
 
         updateListenerTask = self.listenForTransactions()
 
@@ -85,6 +89,8 @@ class InAppStore: RefCounted {
     ///     - onComplete: Callback with parameter: (error: Variant, status: Variant) -> (error: Int `InAppPurchaseError`, status: Int `InAppPurchaseStatus`)
     @Callable
     func purchase(_ productID: String, onComplete: Callable) {
+        GD.print("InAppStore: purchase(\(productID))")
+        
         Task {
             do {
                 if let product: Product = try await getProduct(productID) {
@@ -125,6 +131,7 @@ class InAppStore: RefCounted {
     /// - Returns: True if a product is purchased
     @Callable
     func isPurchased(_ productID: String) -> Bool {
+        print("InAppStore: isPurchased(\(productID))")
         return purchasedProducts.contains(productID)
     }
 
@@ -135,6 +142,9 @@ class InAppStore: RefCounted {
     ///     - onComplete: Callback with parameters: (error: Variant, products: Variant) -> (error: Int, products: [``IAPProduct``])
     @Callable
     func getProducts(identifiers: [String], onComplete: Callable) {
+        print("InAppStore: getProducts")
+        GD.print("InAppStore: getProducts gdstyle")
+        
         Task {
             do {
                 let storeProducts: [Product] = try await Product.products(for: identifiers)
@@ -193,6 +203,8 @@ class InAppStore: RefCounted {
     /// - Parameter onComplete: Callback with parameter: (error: Variant, data: Variant) -> (error: Int, data: String)
     @Callable
     public func getEnvironment(onComplete: Callable) {
+        print("InAppStore getEnvironment")
+        
         if #available(iOS 16.0, *) {
             Task {
                 do {
@@ -210,7 +222,7 @@ class InAppStore: RefCounted {
             }
         } else {
             guard let path = Bundle.main.appStoreReceiptURL?.path else {
-                onComplete.callDeferred(Variant(AppTransactionError.error.rawValue), Variant(""))
+                onComplete.callDeferred(Variant(AppTransactionError.error.rawValue), Variant("unknown"))
                 return
             }
 
@@ -257,15 +269,20 @@ class InAppStore: RefCounted {
     }
 
     func updateProducts() async {
+        print("InAppStore: update products")
+        
         do {
             let storeProducts = try await Product.products(for: productIDs)
             products = storeProducts
+            GD.print("InAppStore: update products complete, found \(products.count) products")
         } catch {
             GD.pushError("Failed to get products from App Store: \(error)")
         }
     }
 
     func updateProductStatus() async {
+        print("InAppStore: update product status")
+        
         for await result: VerificationResult<Transaction> in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else {
                 continue
@@ -291,11 +308,11 @@ class InAppStore: RefCounted {
     }
 
     func listenForTransactions() -> Task<Void, Error> {
+        print("InAppStore: listen for transactions")
         return Task.detached {
             for await result: VerificationResult<Transaction> in Transaction.updates {
                 do {
                     let transaction: Transaction = try self.checkVerified(result)
-
                     await self.updateProductStatus()
                     await transaction.finish()
                 } catch {
