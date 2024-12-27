@@ -14,29 +14,29 @@ public enum StoreError: Error {
     case failedVerification
 }
 
-let OK: Int = 0
-
 
 @Godot
 class InAppStore: Node {
+    enum InAppStoreError: Int, Error {
+        case none          = 0
+        case unknown       = 1
+        case userCancelled = 2
+        case networkError  = 3
+        case systemError   = 4
+    }
+    
     enum InAppPurchaseStatus: Int {
-        case purchaseOK = 0
-        case purchaseSuccessfulButUnverified = 2
-        case purchasePendingAuthorization = 3
-        case purchaseCancelledByUser = 4
+        case successful              = 0
+        case successfulButUnverified = 1
+        case pendingAuthorization    = 2
+        case cancelledByUser         = 3
+        case error                   = 4
     }
     
     enum InAppPurchaseError: Int, Error {
-        case failedToGetProducts = 1
-        case purchaseFailed = 2
-        case noSuchProduct = 3
-        case failedToRestorePurchases = 4
-    }
-    
-    enum AppTransactionError: Int, Error {
-        case ok = 0
-        case unverified = 1
-        case error = 2
+        case none            = 0
+        case productNotFound = 1
+        case purchaseFailed  = 2
     }
     
     /// Called when a product is puchased
@@ -72,13 +72,63 @@ class InAppStore: Node {
     func initialize(productIDs: [String]) {
         self.productIDs = productIDs
         
-        GD.print("InAppStore: initialize (\(productIDs))")
-        
         updateListenerTask = self.listenForTransactions()
         
         Task {
             await updateProducts()
             await updateProductStatus()
+        }
+    }
+    
+    /// Get products
+    ///
+    /// - Parameters:
+    ///     - identifiers: An array of product identifiers that you enter in App Store Connect.
+    ///     - onComplete: Callback with parameters: (error: Variant, products: Variant) -> (error: Int, products: [``InAppStoreProduct``])
+    @Callable
+    func getProducts(identifiers: [String], onComplete: Callable) {
+        Task {
+            do {
+                let storeProducts: [Product] = try await Product.products(for: identifiers)
+                var products: GArray = GArray()
+                
+                // Convert the StoreKit objects into objects Godot can read.
+                for storeProduct: Product in storeProducts {
+                    var product: InAppStoreProduct = InAppStoreProduct()
+                    product.displayName      = storeProduct.displayName
+                    product.displayPrice     = storeProduct.displayPrice
+                    product.storeDescription = storeProduct.description
+                    product.productID        = storeProduct.id
+                    
+                    switch storeProduct.type {
+                    case .consumable:
+                        product.type = InAppStoreProduct.TYPE_CONSUMABLE
+                    case .nonConsumable:
+                        product.type = InAppStoreProduct.TYPE_NON_CONSUMABLE
+                    case .autoRenewable:
+                        product.type = InAppStoreProduct.TYPE_AUTO_RENEWABLE
+                    case .nonRenewable:
+                        product.type = InAppStoreProduct.TYPE_NON_RENEWABLE
+                    default:
+                        product.type = InAppStoreProduct.TYPE_UNKNOWN
+                    }
+                    
+                    products.append(Variant(product))
+                }
+                
+                // Return the objects back to the Godot runtime.
+                onComplete.callDeferred(Variant(InAppStoreError.none.rawValue), Variant(products))
+                
+            } catch StoreKitError.userCancelled {
+                onComplete.callDeferred(Variant(InAppStoreError.userCancelled.rawValue), Variant(GArray()))
+            } catch StoreKitError.networkError(let urlError) {
+                onComplete.callDeferred(Variant(InAppStoreError.networkError.rawValue), Variant(GArray()))
+            } catch StoreKitError.systemError(let sysError) {
+                onComplete.callDeferred(Variant(InAppStoreError.systemError.rawValue), Variant(GArray()))
+            } catch {
+                GD.pushError("InAppStore: getProducts, failed to get products from App Store, error: \(error)")
+                onComplete.callDeferred(Variant(InAppStoreError.unknown.rawValue), Variant(GArray()))
+            }
         }
     }
     
@@ -95,30 +145,31 @@ class InAppStore: Node {
             do {
                 if let product: Product = try await getProduct(productID) {
                     let result: Product.PurchaseResult = try await product.purchase()
+                    
                     switch result {
                     case .success(let verification):
                         // Success
                         let transaction: Transaction = try checkVerified(verification)
                         await transaction.finish()
                         
-                        onComplete.callDeferred(Variant(OK), Variant(InAppPurchaseStatus.purchaseOK.rawValue))
+                        onComplete.callDeferred(Variant(productID), Variant(InAppPurchaseError.none.rawValue), Variant(InAppPurchaseStatus.successful.rawValue))
                         break
                     case .pending:
                         // Transaction waiting on authentication or approval
-                        onComplete.callDeferred(Variant(OK), Variant(InAppPurchaseStatus.purchasePendingAuthorization.rawValue))
+                        onComplete.callDeferred(Variant(productID), Variant(InAppPurchaseError.none.rawValue), Variant(InAppPurchaseStatus.pendingAuthorization.rawValue))
                         break
+                        
                     case .userCancelled:
                         // User cancelled the purchase
-                        onComplete.callDeferred(Variant(OK), Variant(InAppPurchaseStatus.purchaseCancelledByUser.rawValue))
+                        onComplete.callDeferred(Variant(productID), Variant(InAppPurchaseError.none.rawValue), Variant(InAppPurchaseStatus.cancelledByUser.rawValue))
                         break
                     }
                 } else {
-                    GD.pushError("IAP Product doesn't exist: \(productID)")
-                    onComplete.callDeferred(Variant(InAppPurchaseError.noSuchProduct.rawValue), Variant(0))
+                    onComplete.callDeferred(Variant(productID), Variant(InAppPurchaseError.productNotFound.rawValue), Variant(InAppPurchaseStatus.error.rawValue))
                 }
             } catch {
                 GD.pushError("IAP Failed to get products from App Store, error: \(error)")
-                onComplete.callDeferred(Variant(InAppPurchaseError.purchaseFailed.rawValue), Variant(0))
+                onComplete.callDeferred(Variant(productID), Variant(InAppPurchaseError.purchaseFailed.rawValue), Variant(InAppPurchaseStatus.error.rawValue))
             }
         }
     }
@@ -131,53 +182,8 @@ class InAppStore: Node {
     /// - Returns: True if a product is purchased
     @Callable
     func isPurchased(_ productID: String) -> Bool {
-        print("InAppStore: isPurchased(\(productID))")
+        GD.print("InAppStore: isPurchased(\(productID))")
         return purchasedProducts.contains(productID)
-    }
-    
-    /// Get products
-    ///
-    /// - Parameters:
-    ///     - identifiers: An array of product identifiers that you enter in App Store Connect.
-    ///     - onComplete: Callback with parameters: (error: Variant, products: Variant) -> (error: Int, products: [``IAPProduct``])
-    @Callable
-    func getProducts(identifiers: [String], onComplete: Callable) {
-        print("InAppStore: getProducts")
-        GD.print("InAppStore: getProducts gdstyle")
-        
-        Task {
-            do {
-                let storeProducts: [Product] = try await Product.products(for: identifiers)
-                var products: GArray = GArray()
-                
-                for storeProduct: Product in storeProducts {
-                    var product: InAppStoreProduct = InAppStoreProduct()
-                    product.displayName = storeProduct.displayName
-                    product.displayPrice = storeProduct.displayPrice
-                    product.storeDescription = storeProduct.description
-                    product.productID = storeProduct.id
-                    
-                    switch storeProduct.type {
-                    case .consumable:
-                        product.type = InAppStoreProduct.TYPE_CONSUMABLE
-                    case .nonConsumable:
-                        product.type = InAppStoreProduct.TYPE_NON_CONSUMABLE
-                    case .autoRenewable:
-                        product.type = InAppStoreProduct.TYPE_AUTO_RENEWABLE
-                    case .nonRenewable:
-                        product.type = InAppStoreProduct.TYPE_NON_RENEWABLE
-                    default:
-                        product.type = InAppStoreProduct.TYPE_UNKNOWN
-                    }
-                    
-                    onComplete.callDeferred(Variant(OK), Variant(products))
-                }
-            } catch {
-                GD.pushError("Failed to get products from App Store, error: \(error)")
-                var empty_products: GArray = GArray()
-                onComplete.callDeferred(Variant(InAppPurchaseError.failedToGetProducts.rawValue), Variant(empty_products))
-            }
-        }
     }
     
     /// Restore purchases
@@ -188,74 +194,38 @@ class InAppStore: Node {
         Task {
             do {
                 try await AppStore.sync()
-                onComplete.callDeferred(Variant(OK))
+                onComplete.callDeferred(Variant(InAppStoreError.none.rawValue))
             } catch {
-                GD.pushError("Failed to restore purchases: \(error)")
-                onComplete.callDeferred(Variant(InAppPurchaseError.failedToRestorePurchases.rawValue))
+                GD.pushError("InAppStore: Failed to restore purchases: \(error)")
+                onComplete.callDeferred(Variant(InAppStoreError.unknown.rawValue))
             }
         }
     }
     
     /// Get the current app environment
     ///
-    /// NOTE: On iOS 16 this might display a system prompt that asks users to authenticate
-    ///
     /// - Parameter onComplete: Callback with parameter: (error: Variant, data: Variant) -> (error: Int, data: String)
     @Callable
     public func getEnvironment(onComplete: Callable) {
-        print("InAppStore getEnvironment")
+        GD.print("InAppStore getEnvironment")
         
-        if #available(iOS 16.0, *) {
-            Task {
-                do {
-                    let result = try await AppTransaction.shared
-                    switch result {
-                    case .verified(let appTransaction):
-                        onComplete.callDeferred(Variant(AppTransactionError.ok.rawValue), Variant(appTransaction.environment.rawValue))
-                    case .unverified(let appTransaction, let verificationError):
-                        onComplete.callDeferred(Variant(AppTransactionError.unverified.rawValue), Variant(appTransaction.environment.rawValue))
-                    }
-                } catch {
-                    GD.print("Failed to get appTransaction, error: \(error)")
-                    onComplete.callDeferred(Variant(AppTransactionError.error.rawValue), Variant(""))
-                }
-            }
+        guard let path = Bundle.main.appStoreReceiptURL?.path else {
+            onComplete.callDeferred(Variant(InAppStoreError.unknown.rawValue), Variant("unknown"))
+            return
+        }
+        
+        if path.contains("CoreSimulator") {
+            onComplete.callDeferred(Variant(InAppStoreError.none.rawValue), Variant("xcode"))
+        } else if path.contains("sandboxReceipt") {
+            onComplete.callDeferred(Variant(InAppStoreError.none.rawValue), Variant("sandbox"))
         } else {
-            guard let path = Bundle.main.appStoreReceiptURL?.path else {
-                onComplete.callDeferred(Variant(AppTransactionError.error.rawValue), Variant("unknown"))
-                return
-            }
-            
-            if path.contains("CoreSimulator") {
-                onComplete.callDeferred(Variant(AppTransactionError.ok.rawValue), Variant("xcode"))
-            } else if path.contains("sandboxReceipt") {
-                onComplete.callDeferred(Variant(AppTransactionError.ok.rawValue), Variant("sandbox"))
-            } else {
-                onComplete.callDeferred(Variant(AppTransactionError.ok.rawValue), Variant("production"))
-            }
+            onComplete.callDeferred(Variant(InAppStoreError.none.rawValue), Variant("production"))
         }
     }
     
-    /// Refresh the App Store signed app transaction (only iOS 16+)
-    ///
-    /// NOTE: This will display a system prompt that asks users to authenticate
-    @Callable
-    public func refreshAppTransaction(onComplete: Callable) {
-        if #available(iOS 16.0, *) {
-            Task {
-                do {
-                    try await AppTransaction.refresh()
-                    onComplete.callDeferred(Variant(AppTransactionError.ok.rawValue))
-                } catch {
-                    onComplete.callDeferred(Variant(AppTransactionError.unverified.rawValue))
-                }
-            }
-        } else {
-            onComplete.callDeferred(Variant(OK))
-        }
-    }
-    
+    //
     // Internal functionality
+    //
     
     func getProduct(_ productIdentifier: String) async throws -> Product? {
         var product: [Product] = []
